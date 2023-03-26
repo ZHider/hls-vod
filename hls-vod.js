@@ -2,6 +2,7 @@
 
 var childProcess = require('child_process');
 var http = require('http');
+var https = require('https');
 var url = require('url');
 var path = require('path');
 var os = require('os');
@@ -15,25 +16,28 @@ var express = require('express');
 var serveStatic = require('serve-static');
 var bodyParser = require('body-parser');
 var socketIo = require('socket.io');
+const { isUndefined } = require('underscore');
 
 // Parameters
-var listenPort = 4040;
+var listenPort = 9590;
 var videoBitrate = 1000;
 var audioBitrate = 128;
 var targetWidth = 1280;
 var searchPaths = [];
 var rootPath = null;
 var outputPath;
+var cacheFilename = "cache.json";
 var transcoderPath = 'ffmpeg';
 var transcoderType = 'ffmpeg';
 var processCleanupTimeout = 6 * 60 * 60 * 1000;
 var debug = false;
 var playlistRetryDelay = 500;
 var playlistRetryTimeout = 60000;
-var playlistEndMinTime = 20000;
+var playlistEndMinTime = 2000;
 
 var videoExtensions = ['.mp4','.3gp2','.3gp','.3gpp', '.3gp2','.amv','.asf','.avs','.dat','.dv', '.dvr-ms','.f4v','.m1v','.m2p','.m2ts','.m2v', '.m4v','.mkv','.mod','.mp4','.mpe','.mpeg1', '.mpeg2','.divx','.mpeg4','.mpv','.mts','.mxf', '.nsv','.ogg','.ogm','.mov','.qt','.rv','.tod', '.trp','.tp','.vob','.vro','.wmv','.web,', '.rmvb', '.rm','.ogv','.mpg', '.avi', '.mkv', '.wmv', '.asf', '.m4v', '.flv', '.mpg', '.mpeg', '.mov', '.vob', '.ts', '.webm'];
 var audioExtensions = ['.mp3', '.aac', '.m4a'];
+var pictureExtensions = ['.tif', '.jpg', '.jpeg', '.ico', '.tiff', '.gif', '.svg', '.jfif', '.webp', '.png', '.bmp', 'pjpeg', '.avif'];
 
 // Program state
 var encoderProcesses = {};
@@ -41,6 +45,7 @@ var currentFile = null;
 var lock = false;
 var encodingStartTime = null;
 var io = null;
+var fileID = {};
 
 // We have to apply some hacks to the playlist
 function withModifiedPlaylist(readStream, eachLine, done) {
@@ -76,14 +81,48 @@ function updateActiveTranscodings() {
 	}));
 }
 
+function getFileName(o){
+	var pos=o.lastIndexOf("\\");
+	return o.substring(pos+1);  
+}
+
+function guid() {
+    function S4() {
+       return (((1+Math.random())*0x10000)|0).toString(16).substring(1);
+    }
+    return (S4()+S4()+"-"+S4()+"-"+S4()+"-"+S4()+"-"+S4()+S4()+S4());
+}
+
+function loadUUIDs() {
+	try {
+		fileID = fs.readJsonSync(cacheFilename);
+	} catch (error) {
+		console.error(error);
+		fileID = {};
+	}
+}
+
+function getUUIDForFile(name){
+	let filename = fileID[name];
+
+	if (!filename) {
+		filename = guid();
+		fileID[name] = filename;
+	}
+
+	fs.writeJson(cacheFilename, fileID);
+	return filename;
+}
+
 function spawnNewProcess(file, playlistPath) {
-	var playlistFileName = 'stream.m3u8';
+	let fileUUID = getUUIDForFile(file);
+	var playlistFileName = fileUUID + '.m3u8';
 
 	console.log({ file });
 
 	if (transcoderType === 'ffmpeg') {
 		// https://www.ffmpeg.org/ffmpeg-formats.html#segment
-		var tsOutputFormat = 'stream%05d.ts';
+		var tsOutputFormat = fileUUID + '-%05d.ts';
 		var args = [
 			'-i', file, '-sn',
 			'-async', '1', '-acodec', 'libmp3lame', '-b:a', audioBitrate + 'k', '-ar', '44100', '-ac', '2',
@@ -92,6 +131,7 @@ function spawnNewProcess(file, playlistPath) {
 			'-threads', '0', '-flags', '-global_header', '-map', '0',
 			// '-map', '0:v:0', '-map', '0:a:1'
 			'-f', 'segment',
+			// '-segment_list_entry_prefix', '/hls/',
 			'-segment_list', playlistFileName, '-segment_format', 'mpegts', '-segment_list_flags', 'live', tsOutputFormat
 			//'-segment_time', '10', '-force_key_frames', 'expr:gte(t,n_forced*10)',
 			//'-f', 'hls', '-hls_time', '10', '-hls_list_size', '0', '-hls_allow_cache', '0', '-hls_segment_filename', tsOutputFormat, playlistFileName
@@ -99,7 +139,7 @@ function spawnNewProcess(file, playlistPath) {
 	}
 	else {
 		// https://wiki.videolan.org/Documentation:Streaming_HowTo/Streaming_for_the_iPhone/
-		var tsOutputFormat = 'stream#####.ts';
+		var tsOutputFormat = fileUUID + '-#####.ts';
 
 		var args = [
 			'-I' ,'dummy', '--no-loop', '--no-repeat', file, 'vlc://quit',
@@ -264,14 +304,15 @@ function handlePlaylistRequest(file, response) {
 
 	file = path.join('/', file); // Remove ".." etc
 	file = path.join(rootPath, file);
-	var playlistPath = path.join(outputPath, '/stream.m3u8');
+	var playlistPath = path.join(outputPath, '/' + getUUIDForFile(file) + '.m3u8');
+	console.log('playlistPath: ' + playlistPath);
 
-	if (currentFile != file) {
+	encodingStartTime = new Date();
+	// if (currentFile != file) {
+	if (!fs.existsSync(playlistPath)) {
 		lock = true;
 
 		console.log('New file to encode chosen');
-
-		encodingStartTime = new Date();
 
 		function startNewEncoding() {
 			fs.unlink(playlistPath, function (err) {
@@ -297,7 +338,7 @@ function handlePlaylistRequest(file, response) {
 
 function browseDir(browsePath, response) {
 	browsePath = path.join('/', browsePath); // Remove ".." etc
-	fsBrowsePath = path.join(rootPath, browsePath);
+	let fsBrowsePath = path.join(rootPath, browsePath);
 
 	var fileList = [];
 
@@ -352,6 +393,10 @@ function browseDir(browsePath, response) {
 						else if (audioExtensions.indexOf(extName) != -1) {
 							fileObj.type = 'audio';
 							fileObj.path = path.join('/audio/' + relPath);
+
+						} else if (pictureExtensions.indexOf(extName) != -1) {
+							fileObj.type = 'picture';
+							fileObj.path = path.join('/picture/' + encodeURIComponent(relPath));
 						}
 
 						fileObj.relPath = path.join('/', relPath);
@@ -370,28 +415,124 @@ function browseDir(browsePath, response) {
 	});
 }
 
+function sendPic(picPath, response) {
+	response.setHeader('Content-Type', 'image/webp');
+	// 格式必须为 binary，否则会出错
+	// 创建文件可读流
+	const cs = fs.createReadStream(picPath);
+	cs.on("data", chunk => {
+		response.write(chunk);
+	})
+	cs.on("end", () => {
+		response.status(200);
+		response.end();
+	})
+}
+
 function handleThumbnailRequest(file, response) {
-	file = path.join('/', file);
-	var fsPath = path.join(rootPath, file);
+	
+	let fsPath = path.join(rootPath, path.join('/', file));
+	let uuidFilename = getUUIDForFile(fsPath) + "-thumbnail.jpg";
+	let uuidFilepath = path.join(outputPath, uuidFilename);
+
+	function genVidThumbnail() {
+		let duration = childProcess.execSync('ffprobe -i "' + fsPath + '" -show_entries format=duration -v quiet -of csv="p=0"', 'utf-8');
+		duration = parseInt(duration);
+
+		for (let index = 1; index <= 4; index++) {
+			let sstime = Math.floor((index - 0.5) * duration / 4);
+			childProcess.execSync(
+				'ffmpeg -ss ' + sstime + ' -i "' + fsPath + '" -vf select="eq(pict_type\\,I)",scale=640:-1 -y -vframes 1 thumbnail_temp_' + index.toString() + '.jpg', 'utf-8');
+		}
+
+		var child = childProcess.spawn(
+			transcoderPath, 
+			// ['-ss', '00:00:20', '-i', fsPath, '-vf', 'select=eq(pict_type\\,PICT_TYPE_I),scale=640:-1,tile=3x3', '-f', 'image2pipe', '-vframes', '1', uuidFilename],
+			[
+				"-re", "-i", "thumbnail_temp_1.jpg",
+				"-re", "-i", "thumbnail_temp_2.jpg",
+				"-re", "-i", "thumbnail_temp_3.jpg",
+				"-re", "-i", "thumbnail_temp_4.jpg",
+				"-filter_complex",
+				'nullsrc=size=1280x720 [base]; \
+				[0:v] setpts=PTS-STARTPTS,scale=640x360 [upperleft]; \
+				[1:v] setpts=PTS-STARTPTS, scale=640x360 [upperright]; \
+				[2:v] setpts=PTS-STARTPTS, scale=640x360 [lowerleft]; \
+				[3:v] setpts=PTS-STARTPTS, scale=640x360 [lowerright]; \
+				[base][upperleft] overlay=shortest=1[tmp1]; \
+				[tmp1][upperright] overlay=shortest=1:x=640 [tmp2]; \
+				[tmp2][lowerleft] overlay=shortest=1:y=360 [tmp3]; \
+				[tmp3][lowerright] overlay=shortest=1:x=640:y=360',
+				uuidFilepath
+			],
+			{
+				stdio: ['inherit', 'inherit', 'pipe']
+			}
+		);
+
+		return child;
+	}
 
 	// http://superuser.com/questions/538112/meaningful-thumbnails-for-a-video-using-ffmpeg
 	//var args = ['-ss', '00:00:20', '-i', fsPath, '-vf', 'select=gt(scene\,0.4)', '-vf', 'scale=iw/2:-1,crop=iw:iw/2', '-f', 'image2pipe', '-vframes', '1', '-'];
-	var args = ['-ss', '00:00:20', '-i', fsPath, '-vf', 'select=eq(pict_type\\,PICT_TYPE_I),scale=640:-1,tile=2x2', '-f', 'image2pipe', '-vframes', '1', '-'];
+	
+	if (!fs.existsSync(uuidFilepath)) {
+		
+		if (debug) console.log('Spawning jpg thumb process');
 
-	if (debug) console.log('Spawning thumb process');
+		let child = genVidThumbnail();
 
-	var child = childProcess.spawn(transcoderPath, args, {cwd: outputPath, env: process.env});
+		child.stderr.on('data', function(data) {
+			if (debug) console.log(data.toString());
+		});
 
-	child.stderr.on('data', function(data) {
-		if (debug) console.log(data.toString());
-	});
+		child.on('close', (code, signal) => {
+			sendPic(uuidFilepath, response);
+		})
 
-	response.setHeader('Content-Type', 'image/jpeg');
-	child.stdout.pipe(response);
+		setTimeout(function() {
+			child.kill('SIGKILL');
+		}, 10000);
+	} else {
+		sendPic(uuidFilepath, response);
+	}
+}
 
-	setTimeout(function() {
-		child.kill('SIGKILL');
-	}, 10000);
+function handlePictureRequest(file, response) {
+
+	let fsPath = path.join(rootPath, path.join('/', file));
+	let uuidFilename = getUUIDForFile(fsPath) + ".webp";
+	let uuidFilepath = path.join(outputPath, uuidFilename);
+
+	if (!fs.existsSync(uuidFilepath)) {
+
+		if (debug) console.log('Spawning webp thumb process');
+
+		var child = childProcess.spawn(
+			transcoderPath, 
+			['-i', fsPath, '-vf', 'scale=iw/2:ih/2', '-f', 'webp', '-q', '75', '-pix_fmt', 'yuv420p', '-y', uuidFilename],
+			{
+				cwd: outputPath, env: process.env,
+				stdio: ['inherit', 'inherit', 'pipe']
+			}
+		);
+
+		child.stderr.on('data', function(data) {
+			if (debug) console.log(data.toString());
+		});
+
+		child.on('close', (code, signal) => {
+			sendPic(uuidFilepath, response);
+		})
+
+		setTimeout(function() {
+			child.kill('SIGKILL');
+		}, 10000);
+	} else {
+		sendPic(uuidFilepath, response);
+	}
+	
+	
 }
 
 
@@ -513,6 +654,7 @@ function init() {
 
 	if (!outputPath) outputPath = path.join(os.tmpdir(), 'hls-vod-cache');
 	fs.mkdirsSync(outputPath);
+	cacheFilename = path.join(outputPath, cacheFilename);
 
 	if (transcoderType === 'vlc') {
 		const guessVlcPath = '/Applications/VLC.app/Contents/MacOS/VLC';
@@ -524,11 +666,19 @@ function init() {
 	console.log('Created directory ' + outputPath);
 
 	initExpress();
+	loadUUIDs();
 }
 
 function initExpress() {
 	var app = express();
-	var server = http.Server(app);
+	// var server = http.Server(app);
+
+	const HTTPS_OPTOIN = {
+		key: fs.readFileSync("C:\\Users\\IvanD\\.keys\\ivandspc.key", 'utf8'),
+		cert: fs.readFileSync("C:\\Users\\IvanD\\.keys\\ivandspc.crt", 'utf8')
+	};
+	const server = https.createServer(HTTPS_OPTOIN, app);
+
 	io = socketIo(server);
 
 	app.use(bodyParser.urlencoded({extended: false}));
@@ -552,6 +702,11 @@ function initExpress() {
 	app.get(/^\/thumbnail\//, function(request, response) {
 		var file = path.relative('/thumbnail/', decodeURIComponent(request.path));
 		handleThumbnailRequest(file, response);
+	});
+
+	app.get(/^\/picture\//, function(request, response) {
+		var file = path.relative('/picture/', decodeURIComponent(request.path));
+		handlePictureRequest(file, response);
 	});
 
 	app.get(/^\/browse/, function(request, response) {
@@ -587,6 +742,9 @@ function initExpress() {
 
 
 	server.listen(listenPort);
+	server.on('error', (err) => {
+		console.error(err);
+	})
 	console.log('Listening to port', listenPort);
 }
 

@@ -1,4 +1,4 @@
-$(function() {
+(function() {
 	var $videoContainer = $('#video-container');
 	var $audioPlayer = $('audio');
 	var $audioContainer = $('#audio-container');
@@ -6,7 +6,11 @@ $(function() {
 	var $playerLoading = $('#player-loading');
 
 	// State
-	var mediaElement;
+	// const dp = new DPlayer({
+	// 	container: document.getElementById('dplayer'),
+	// 	preload: 'none',
+	// });
+	var dp;
 	var loading = false;
 	var activeTranscodings = [];
 
@@ -17,10 +21,8 @@ $(function() {
 	}
 
 	function videoStop() {
-		if (mediaElement) {
-			mediaElement.pause();
-			$videoContainer.hide();
-		}
+		dp.pause();
+		$videoContainer.hide();
 	}
 
 	function audioPlay(path, name) {
@@ -42,28 +44,12 @@ $(function() {
 		audioStop();
 		hidePreviewImage();
 
+		dp.switchVideo({url: path});
+		dp.play();
+		dp.seek(0.1);
+		
+
 		$videoContainer.show();
-
-		if (mediaElement) {
-			mediaElement.pause();
-
-			mediaElement.setSrc(path);
-			mediaElement.play();
-		}
-		else {
-			var $video = $('#video');
-			$video[0].src = path;
-			$video.mediaelementplayer({
-				stretching: 'responsive',
-				success: function (mediaElement2, domObject) {
-			        mediaElement = mediaElement2;
-					mediaElement.play();
-			    },
-			    error: function (mediaeElement, err) {
-					console.log('Error loading media element');
-			    }
-			});
-		}
 	}
 
 	function hidePreviewImage() {
@@ -73,6 +59,17 @@ $(function() {
 
 	function showPreviewImage(relPath) {
 		var path = '/thumbnail' + relPath;
+		$previewImage.attr('src', path).fadeIn(200);
+		$playerLoading.fadeIn(200);
+		$previewImage.on('load', function() {
+			$playerLoading.fadeOut(200);
+		});
+		videoStop();
+		audioStop();
+	}
+
+	function showPicture(relPath) {
+		var path = '/picture' + relPath;
 		$previewImage.attr('src', path).fadeIn(200);
 		$playerLoading.fadeIn(200);
 		$previewImage.on('load', function() {
@@ -130,21 +127,31 @@ $(function() {
 						});
 						break;
 
+					case 'picture':
+						elem.click(function(){
+							showPicture(file.relPath);
+						});
+						break;
+
 					case 'directory':
 						elem.click(function() {
 							browseTo(file.path);
 						});
 						break;
 
-						default:
+					default:
+						elem.text('');
+						var rawLink = $('<a />').attr('href', '/raw' + file.relPath).text(file.name);
+						elem.append(rawLink);
+						break;
 					}
 
 					if (file.error) {
 						elem.attr('title', file.errorMsg);
 					}
 
-					if (file.type == 'video' || file.type == 'audio') {
-						var rawLink = $('<a style="color: inherit; margin-left: 1em; padding: 1em" />').attr('href', '/raw' + file.relPath).text('RAW');
+					if (file.type == 'video' || file.type == 'audio' || file.type == 'picture') {
+						var rawLink = $('<a target="_blank" style="float: right; margin-left: 0.5em; margin-right: 0.5em;" />').attr('href', '/raw' + file.relPath).text('RAW');
 						rawLink.click(function(event) {
 							event.stopPropagation();
 						});
@@ -152,7 +159,7 @@ $(function() {
 					}
 
 					if (file.type == 'video') {
-						var thumbLink = $('<span style="padding: 1em" />').text('Preview');
+						var thumbLink = $('<a style="float: right; margin-left: 0.5em; margin-right: 0.5em;" />').text('Preview');
 						thumbLink.click(function(event) {
 							event.stopPropagation();
 							showPreviewImage(file.relPath);
@@ -197,8 +204,17 @@ $(function() {
 
 	browseTo('/');
 
+	dp = new DPlayer({
+		container: document.getElementById('dplayer'),
+		preload: 'none',
+		video: { url: 'empty.mp4' }
+	});	
+
 	$videoContainer.hide();
 	$audioContainer.hide();
 	$previewImage.hide();
 	$playerLoading.hide();
-});
+	console.log('inited');
+})();
+
+console.log('done');

@@ -75,6 +75,11 @@ audio {
 	min-height: 400px;
 }
 
+/* #video-container {
+	max-height: 80%;
+	max-width: 100%;
+} */
+
 #player-loading {
 	position: absolute;
     z-index: 1;

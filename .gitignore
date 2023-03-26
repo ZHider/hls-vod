@@ -2,3 +2,10 @@ cache
 node_modules
 .DS_Store
 .idea
+package-lock.json
+static/bootstrap**
+static/font-awesome**
+static/mediaelement**
+**.min.**
+thumbnail*
+empty.mp4
